@@ -49,32 +49,33 @@ func (*MemMapFs) Name() string { return "MemMapFS" }
 
 func (m *MemMapFs) Create(name string) (File, error) {
 	name = normalizePath(name)
+
 	m.mu.Lock()
-	file := mem.CreateFile(name)
-	m.getData()[name] = file
-	m.registerWithParent(file)
+	fileData := mem.CreateFile()
+	m.getData()[name] = fileData
+	m.registerWithParent(name, fileData)
 	m.mu.Unlock()
-	return mem.NewFileHandle(file), nil
+	return mem.NewFileHandle(name, fileData), nil
 }
 
 func (m *MemMapFs) unRegisterWithParent(fileName string) error {
-	f, err := m.lockfreeOpen(fileName)
+	_, err := m.lockfreeOpen(fileName)
 	if err != nil {
 		return err
 	}
-	parent := m.findParent(f)
+	parent := m.findParent(fileName)
 	if parent == nil {
-		log.Panic("parent of ", f.Name(), " is nil")
+		log.Panic("parent of ", fileName, " is nil")
 	}
 
 	parent.Lock()
-	mem.RemoveFromMemDir(parent, f)
+	mem.RemoveFromMemDir(parent, fileName)
 	parent.Unlock()
 	return nil
 }
 
-func (m *MemMapFs) findParent(f *mem.FileData) *mem.FileData {
-	pdir, _ := filepath.Split(f.Name())
+func (m *MemMapFs) findParent(name string) *mem.FileData {
+	pdir, _ := filepath.Split(name)
 	pdir = filepath.Clean(pdir)
 	pfile, err := m.lockfreeOpen(pdir)
 	if err != nil {
@@ -83,13 +84,13 @@ func (m *MemMapFs) findParent(f *mem.FileData) *mem.FileData {
 	return pfile
 }
 
-func (m *MemMapFs) registerWithParent(f *mem.FileData) {
+func (m *MemMapFs) registerWithParent(name string, f *mem.FileData) {
 	if f == nil {
 		return
 	}
-	parent := m.findParent(f)
+	parent := m.findParent(name)
 	if parent == nil {
-		pdir := filepath.Dir(filepath.Clean(f.Name()))
+		pdir := filepath.Dir(name)
 		err := m.lockfreeMkdir(pdir, 0777)
 		if err != nil {
 			//log.Println("Mkdir error:", err)
@@ -104,7 +105,7 @@ func (m *MemMapFs) registerWithParent(f *mem.FileData) {
 
 	parent.Lock()
 	mem.InitializeDir(parent)
-	mem.AddToMemDir(parent, f)
+	mem.AddToMemDir(parent, name, f)
 	parent.Unlock()
 }
 
@@ -120,7 +121,7 @@ func (m *MemMapFs) lockfreeMkdir(name string, perm os.FileMode) error {
 	} else {
 		item := mem.CreateDir(name)
 		m.getData()[name] = item
-		m.registerWithParent(item)
+		m.registerWithParent(name, item)
 	}
 	return nil
 }
@@ -138,7 +139,7 @@ func (m *MemMapFs) Mkdir(name string, perm os.FileMode) error {
 	m.mu.Lock()
 	item := mem.CreateDir(name)
 	m.getData()[name] = item
-	m.registerWithParent(item)
+	m.registerWithParent(name, item)
 	m.mu.Unlock()
 
 	m.Chmod(name, perm|os.ModeDir)
@@ -172,9 +173,11 @@ func normalizePath(path string) string {
 }
 
 func (m *MemMapFs) Open(name string) (File, error) {
+	name = normalizePath(name)
+
 	f, err := m.open(name)
 	if f != nil {
-		return mem.NewReadOnlyFileHandle(f), err
+		return mem.NewReadOnlyFileHandle(name, f), err
 	}
 	return nil, err
 }
@@ -182,7 +185,7 @@ func (m *MemMapFs) Open(name string) (File, error) {
 func (m *MemMapFs) openWrite(name string) (File, error) {
 	f, err := m.open(name)
 	if f != nil {
-		return mem.NewFileHandle(f), err
+		return mem.NewFileHandle(name, f), err
 	}
 	return nil, err
 }
@@ -210,6 +213,8 @@ func (m *MemMapFs) lockfreeOpen(name string) (*mem.FileData, error) {
 }
 
 func (m *MemMapFs) OpenFile(name string, flag int, perm os.FileMode) (File, error) {
+	name = normalizePath(name)
+
 	chmod := false
 	file, err := m.openWrite(name)
 	if os.IsNotExist(err) && (flag&os.O_CREATE > 0) {
@@ -220,7 +225,7 @@ func (m *MemMapFs) OpenFile(name string, flag int, perm os.FileMode) (File, erro
 		return nil, err
 	}
 	if flag == os.O_RDONLY {
-		file = mem.NewReadOnlyFileHandle(file.(*mem.File).Data())
+		file = mem.NewReadOnlyFileHandle(name, file.(*mem.File).Data())
 	}
 	if flag&os.O_APPEND > 0 {
 		_, err = file.Seek(0, os.SEEK_END)
@@ -297,9 +302,8 @@ func (m *MemMapFs) Rename(oldname, newname string) error {
 		m.unRegisterWithParent(oldname)
 		fileData := m.getData()[oldname]
 		delete(m.getData(), oldname)
-		mem.ChangeFileName(fileData, newname)
 		m.getData()[newname] = fileData
-		m.registerWithParent(fileData)
+		m.registerWithParent(newname, fileData)
 		m.mu.Unlock()
 		m.mu.RLock()
 	} else {
@@ -313,7 +317,7 @@ func (m *MemMapFs) Stat(name string) (os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	fi := mem.GetFileInfo(f.(*mem.File).Data())
+	fi := mem.GetFileInfo(f.(*mem.File))
 	return fi, nil
 }
 
@@ -352,9 +356,9 @@ func (m *MemMapFs) Chtimes(name string, atime time.Time, mtime time.Time) error 
 }
 
 func (m *MemMapFs) List() {
-	for _, x := range m.data {
+	for n, x := range m.data {
 		y := mem.FileInfo{FileData: x}
-		fmt.Println(x.Name(), y.Size())
+		fmt.Println(n, y.Size())
 	}
 }
 

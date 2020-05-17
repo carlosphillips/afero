@@ -34,15 +34,16 @@ type File struct {
 	readDirCount int64
 	closed       bool
 	readOnly     bool
+	name         string
 	fileData     *FileData
 }
 
-func NewFileHandle(data *FileData) *File {
-	return &File{fileData: data}
+func NewFileHandle(name string, data *FileData) *File {
+	return &File{name: name, fileData: data}
 }
 
-func NewReadOnlyFileHandle(data *FileData) *File {
-	return &File{fileData: data, readOnly: true}
+func NewReadOnlyFileHandle(name string, data *FileData) *File {
+	return &File{name: name, fileData: data, readOnly: true}
 }
 
 func (f File) Data() *FileData {
@@ -51,7 +52,6 @@ func (f File) Data() *FileData {
 
 type FileData struct {
 	sync.Mutex
-	name    string
 	data    []byte
 	memDir  Dir
 	dir     bool
@@ -59,24 +59,19 @@ type FileData struct {
 	modtime time.Time
 }
 
-func (d *FileData) Name() string {
-	d.Lock()
-	defer d.Unlock()
-	return d.name
-}
-
-func CreateFile(name string) *FileData {
-	return &FileData{name: name, mode: os.ModeTemporary, modtime: time.Now()}
+func CreateFile() *FileData {
+	return &FileData{mode: os.ModeTemporary, modtime: time.Now()}
 }
 
 func CreateDir(name string) *FileData {
-	return &FileData{name: name, memDir: &DirMap{}, dir: true}
+	return &FileData{memDir: &DirMap{}, dir: true}
 }
 
-func ChangeFileName(f *FileData, newname string) {
-	f.Lock()
+func ChangeFileName(f *File, newname string) {
+	// TODO: consider adding lock to the File structure
+	f.fileData.Lock()
 	f.name = newname
-	f.Unlock()
+	f.fileData.Unlock()
 }
 
 func SetMode(f *FileData, mode os.FileMode) {
@@ -95,8 +90,8 @@ func setModTime(f *FileData, mtime time.Time) {
 	f.modtime = mtime
 }
 
-func GetFileInfo(f *FileData) *FileInfo {
-	return &FileInfo{f}
+func GetFileInfo(f *File) *FileInfo {
+	return &FileInfo{name: f.name, FileData: f.fileData}
 }
 
 func (f *File) Open() error {
@@ -119,11 +114,14 @@ func (f *File) Close() error {
 }
 
 func (f *File) Name() string {
-	return f.fileData.Name()
+	// TODO: consider adding lock to the File structure
+	f.fileData.Lock()
+	defer f.fileData.Unlock()
+	return f.name
 }
 
 func (f *File) Stat() (os.FileInfo, error) {
-	return &FileInfo{f.fileData}, nil
+	return &FileInfo{name: f.name, FileData: f.fileData}, nil
 }
 
 func (f *File) Sync() error {
@@ -132,7 +130,7 @@ func (f *File) Sync() error {
 
 func (f *File) Readdir(count int) (res []os.FileInfo, err error) {
 	if !f.fileData.dir {
-		return nil, &os.PathError{Op: "readdir", Path: f.fileData.name, Err: errors.New("not a dir")}
+		return nil, &os.PathError{Op: "readdir", Path: f.name, Err: errors.New("not a dir")}
 	}
 	var outLength int64
 
@@ -155,7 +153,8 @@ func (f *File) Readdir(count int) (res []os.FileInfo, err error) {
 
 	res = make([]os.FileInfo, outLength)
 	for i := range res {
-		res[i] = &FileInfo{files[i]}
+		f := files[i]
+		res[i] = &FileInfo{name: f.name, FileData: f.fileData}
 	}
 
 	return res, err
@@ -205,7 +204,7 @@ func (f *File) Truncate(size int64) error {
 		return ErrFileClosed
 	}
 	if f.readOnly {
-		return &os.PathError{Op: "truncate", Path: f.fileData.name, Err: errors.New("file handle is read only")}
+		return &os.PathError{Op: "truncate", Path: f.name, Err: errors.New("file handle is read only")}
 	}
 	if size < 0 {
 		return ErrOutOfRange
@@ -240,7 +239,7 @@ func (f *File) Write(b []byte) (n int, err error) {
 		return 0, ErrFileClosed
 	}
 	if f.readOnly {
-		return 0, &os.PathError{Op: "write", Path: f.fileData.name, Err: errors.New("file handle is read only")}
+		return 0, &os.PathError{Op: "write", Path: f.name, Err: errors.New("file handle is read only")}
 	}
 	n = len(b)
 	cur := atomic.LoadInt64(&f.at)
@@ -274,10 +273,11 @@ func (f *File) WriteString(s string) (ret int, err error) {
 }
 
 func (f *File) Info() *FileInfo {
-	return &FileInfo{f.fileData}
+	return &FileInfo{name: f.name, FileData: f.fileData}
 }
 
 type FileInfo struct {
+	name string
 	*FileData
 }
 

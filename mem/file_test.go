@@ -6,29 +6,28 @@ import (
 	"time"
 )
 
-func TestFileDataNameRace(t *testing.T) {
+func TestFileNameRace(t *testing.T) {
 	t.Parallel()
 	const someName = "someName"
 	const someOtherName = "someOtherName"
-	d := FileData{
-		name: someName,
+	d := FileData{}
+	f := NewFileHandle(someName, &d)
+
+	if f.Name() != someName {
+		t.Errorf("Failed to read correct Name, was %v", f.Name())
 	}
 
-	if d.Name() != someName {
-		t.Errorf("Failed to read correct Name, was %v", d.Name())
-	}
-
-	ChangeFileName(&d, someOtherName)
-	if d.Name() != someOtherName {
-		t.Errorf("Failed to set Name, was %v", d.Name())
+	ChangeFileName(f, someOtherName)
+	if f.Name() != someOtherName {
+		t.Errorf("Failed to set Name, was %v", f.Name())
 	}
 
 	go func() {
-		ChangeFileName(&d, someName)
+		ChangeFileName(f, someName)
 	}()
 
-	if d.Name() != someName && d.Name() != someOtherName {
-		t.Errorf("Failed to read either Name, was %v", d.Name())
+	if f.Name() != someName && f.Name() != someOtherName {
+		t.Errorf("Failed to read either Name, was %v", f.Name())
 	}
 }
 
@@ -157,8 +156,8 @@ func TestFileDataSizeRace(t *testing.T) {
 func TestFileReadAtSeekOffset(t *testing.T) {
 	t.Parallel()
 
-	fd := CreateFile("foo")
-	f := NewFileHandle(fd)
+	fd := CreateFile()
+	f := NewFileHandle("foo", fd)
 
 	_, err := f.WriteString("TEST")
 	if err != nil {
